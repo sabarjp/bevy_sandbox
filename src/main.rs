@@ -2,10 +2,12 @@ use std::f32::consts::PI;
 
 use bevy::app::App;
 use bevy::DefaultPlugins;
+use bevy::ecs::component::Component;
 use bevy::ecs::system::lifetimeless::SRes;
 use bevy::ecs::system::SystemParamItem;
-use bevy::pbr::{MaterialMeshBundle, MaterialPipeline, PbrBundle, PointLightBundle, SpecializedMaterial};
-use bevy::prelude::{Assets, Camera, Image, MaterialPlugin, Vec2, Vec4};
+use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::pbr::{AmbientLight, MaterialMeshBundle, MaterialPipeline, PointLightBundle, SpecializedMaterial};
+use bevy::prelude::{Assets, Camera, EventReader, Mat3, MaterialPlugin, MouseButton, PerspectiveCameraBundle, PerspectiveProjection, SpawnSceneCommands, Vec2, Vec4, Windows};
 use bevy::prelude::AssetServer;
 use bevy::prelude::Color;
 use bevy::prelude::Commands;
@@ -14,7 +16,6 @@ use bevy::prelude::Input;
 use bevy::prelude::KeyCode;
 use bevy::prelude::Mesh;
 use bevy::prelude::Msaa;
-use bevy::prelude::PerspectiveCameraBundle;
 use bevy::prelude::PointLight;
 use bevy::prelude::Quat;
 use bevy::prelude::Query;
@@ -22,7 +23,6 @@ use bevy::prelude::Res;
 use bevy::prelude::ResMut;
 use bevy::prelude::Shader;
 use bevy::prelude::shape;
-use bevy::prelude::StandardMaterial;
 use bevy::prelude::Time;
 use bevy::prelude::Transform;
 use bevy::prelude::Vec3;
@@ -30,12 +30,11 @@ use bevy::prelude::With;
 use bevy::reflect::TypeUuid;
 use bevy::render::mesh::MeshVertexBufferLayout;
 use bevy::render::render_asset::{PrepareAssetError, RenderAsset, RenderAssets};
-use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType, BufferInitDescriptor, BufferSize, BufferUsages, RenderPipelineDescriptor, SamplerBindingType, ShaderStages, SpecializedMeshPipelineError, TextureSampleType, TextureViewDimension};
-use bevy::render::render_resource::std140::{AsStd140, Std140, WriteStd140};
+use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferInitDescriptor, BufferSize, BufferUsages, RenderPipelineDescriptor, ShaderStages, SpecializedMeshPipelineError};
+use bevy::render::render_resource::std140::{AsStd140, Std140};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::{RenderApp, RenderStage};
 use bevy::utils::default;
-use bevy_config_cam::ConfigCam;
 use rand::Rng;
 
 fn main() {
@@ -45,10 +44,14 @@ fn main() {
     app.insert_resource(Msaa { samples: 4 })
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
-        .add_plugin(ConfigCam)
+        .insert_resource(AmbientLight {
+            color: Color::WHITE,
+            brightness: 1.0 / 5.0
+        })
         .add_startup_system(setup)
+        .add_system(pan_orbit_camera)
         .add_system(disco)
-        .add_system(orbit);
+        .add_system(light_orbit);
 
     // render stages
     app.sub_app_mut(RenderApp)
@@ -61,7 +64,6 @@ fn main() {
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials1: ResMut<Assets<StandardMaterial>>,
     mut materials2: ResMut<Assets<CustomMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
@@ -70,29 +72,40 @@ fn setup(
         mesh: meshes.add(Mesh::from(shape::Plane { size: 3000.0 })),
         material: materials2.add(CustomMaterial {
             color: Color::rgb(0.7, 0.7, 0.7),
+            enabled: true,
             ..default()
         }),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
         ..default()
     });
 
-    // cube
-    commands.spawn().insert_bundle(MaterialMeshBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials2.add(CustomMaterial{
-            color: Color::rgb(1.0, 0.0, 0.0),
-            ..default()
-        }),
-        transform: Transform::from_xyz(0.0, 0.5, 0.0),
-        ..default()
-    });
+    // model
+    commands.spawn_scene(asset_server.load("models/gltf_test.gltf#Scene-"));
 
-    /*
+    // cube
+    for x in 1..10 {
+        for y in 1..10 {
+            for z in 1..10 {
+                commands.spawn().insert_bundle(MaterialMeshBundle {
+                    mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+                    material: materials2.add(CustomMaterial{
+                        color: Color::rgb(1.0, 0.0, 0.0),
+                        enabled: true,
+                        ..default()
+                    }),
+                    transform: Transform::from_xyz(0.0 + x as f32 * 2.0, 0.5 + y as f32 * 2.0, 0.0 + z as f32 * 2.0),
+                    ..default()
+                });
+            }
+        }
+    }
+
     commands.spawn_bundle(PerspectiveCameraBundle {
-        transform: Transform::from_xyz(-2.0, 2.5, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(-10.0, 5.0, -10.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ..default()
+    }).insert(PanOrbitCamera{
         ..default()
     });
-    */
 
     commands.spawn_bundle(PointLightBundle {
         point_light: PointLight {
@@ -106,7 +119,7 @@ fn setup(
     });
 }
 
-fn orbit(time: Res<Time>, mut query: Query<&mut Transform, With<PointLight>>) {
+fn light_orbit(time: Res<Time>, mut query: Query<&mut Transform, With<PointLight>>) {
     for mut lightb in query.iter_mut() {
         lightb.rotate_around(Vec3::ZERO, Quat::from_rotation_z(PI * time.delta_seconds()));
     }
@@ -122,14 +135,20 @@ fn disco(input: Res<Input<KeyCode>>, mut query: Query<&mut PointLight>) {
     }
 }
 
-fn extract_camera_eye(mut commands: Commands, query: Query<&Transform, With<Camera>>) {
-    for camera in query.iter() {
+struct ExtractedCameraEye {
+    camera_origin: Vec3
+}
+
+// extract the camera position into a resource in render world
+fn extract_camera_eye(mut commands: Commands, query: Query<(&Transform, &Camera)>) {
+    for (transform, _) in query.iter() {
         commands.insert_resource(ExtractedCameraEye {
-            camera_origin: camera.translation
+            camera_origin: transform.translation
         });
     }
 }
 
+// write the camera position into the buffer for our shader asset
 fn prepare_camera_eye(mut material_assets: ResMut<RenderAssets<CustomMaterial>>, camera_eye: Res<ExtractedCameraEye>, render_queue: Res<RenderQueue>) {
     for material in material_assets.values_mut() {
         material.uniform_data.origin = camera_eye.camera_origin;
@@ -141,35 +160,21 @@ fn prepare_camera_eye(mut material_assets: ResMut<RenderAssets<CustomMaterial>>,
     }
 }
 
-struct ExtractedCameraEye {
-    camera_origin: Vec3
-}
-
-
-// This is the struct that will be passed to your shader
-#[derive(Debug, Clone, TypeUuid)]
+// This struct is the custom material itself
+#[derive(Clone, TypeUuid, Default)]
 #[uuid = "4ee9c363-1124-4113-890e-199d81b00281"]
 pub struct CustomMaterial {
     color: Color,
-    origin: Vec3
-    // pos0_texture: Handle<Image>,
-    // pos1_texture: Handle<Image>,
-    // smoke_mask_texture: Handle<Image>,
+    origin: Vec3,
+    enabled: bool
 }
 
-#[derive(Debug, Clone, AsStd140)]
+// This is the struct that will be passed to the shader, using AsStd140 for uniforms
+#[derive(Clone, AsStd140)]
 struct CustomMaterialUniformData {
     color: Vec4,
-    origin: Vec3
-}
-
-impl Default for CustomMaterial {
-    fn default() -> CustomMaterial {
-        CustomMaterial {
-            color: Color::rgba(1.0, 1.0, 1.0, 1.0),
-            origin: Vec3::new(0.0, 0.0, 0.0)
-        }
-    }
+    origin: Vec3,
+    enabled: f32
 }
 
 #[derive(Clone)]
@@ -184,46 +189,24 @@ impl RenderAsset for CustomMaterial {
     type PreparedAsset = GpuCustomMaterial;
     type Param = (
         SRes<RenderDevice>,
-        SRes<RenderAssets<Image>>,
         SRes<MaterialPipeline<Self>>
     );
+
     fn extract_asset(&self) -> Self::ExtractedAsset {
         self.clone()
     }
 
     fn prepare_asset(
         extracted_asset: Self::ExtractedAsset,
-        (render_device, gpu_images, material_pipeline): &mut SystemParamItem<Self::Param>,
+        (render_device, material_pipeline): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
         // prepare attributes passed to shader
         let uniform_data = CustomMaterialUniformData {
             color: extracted_asset.color.as_linear_rgba_f32().into(),
             origin: extracted_asset.origin,
+            enabled: (extracted_asset.enabled as i32) as f32,
         };
 
-        // let pi = Vec2::new(PI, PI/180.0);
-        // let gamma = Vec2::new(2.2, 1.0/2.2);
-        // let sun_position = Vec2::new(260.0, 0.0);
-        // let origin = Vec2::new(0.0, 0.0);
-        // let near_far = Vec2::new(10.0, 200.0);
-        // let enabled = Vec2::new(1f32, 1f32);
-        // let background_color0 = Color::rgba(0.4, 0.8, 0.9, 1.0);
-        // let background_color1 = Color::rgba(0.8, 0.2, 0.0, 1.0);
-
-        // let base_image = match gpu_images.get(&extracted_asset.pos0_texture) {
-        //     Some(base_image) => base_image,
-        //     None => return Err(PrepareAssetError::RetryNextUpdate(extracted_asset))
-        // };
-        //
-        // let fog_image = match gpu_images.get(&extracted_asset.pos1_texture) {
-        //     Some(fog_image) => fog_image,
-        //     None => return Err(PrepareAssetError::RetryNextUpdate(extracted_asset))
-        // };
-        //
-        // let bloom_image = match gpu_images.get(&extracted_asset.smoke_mask_texture) {
-        //     Some(bloom_image) => bloom_image,
-        //     None => return Err(PrepareAssetError::RetryNextUpdate(extracted_asset))
-        // };
 
         // load data buffer for shader
         let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -238,36 +221,6 @@ impl RenderAsset for CustomMaterial {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
                 },
-
-                // BindGroupEntry {
-                //     binding: 1,
-                //     resource: BindingResource::TextureView(&base_image.texture_view),
-                // },
-                //
-                // BindGroupEntry {
-                //     binding: 2,
-                //     resource: BindingResource::Sampler(&base_image.sampler),
-                // },
-                //
-                // BindGroupEntry {
-                //     binding: 3,
-                //     resource: BindingResource::TextureView(&fog_image.texture_view),
-                // },
-                //
-                // BindGroupEntry {
-                //     binding: 4,
-                //     resource: BindingResource::Sampler(&fog_image.sampler),
-                // },
-                //
-                // BindGroupEntry {
-                //     binding: 5,
-                //     resource: BindingResource::TextureView(&bloom_image.texture_view),
-                // },
-                //
-                // BindGroupEntry {
-                //     binding: 6,
-                //     resource: BindingResource::Sampler(&bloom_image.sampler),
-                // },
             ],
             label: None,
             layout: &material_pipeline.material_layout,
@@ -303,6 +256,7 @@ impl SpecializedMaterial for CustomMaterial {
     }
 
     fn fragment_shader(asset_server: &AssetServer) -> Option<Handle<Shader>> {
+        asset_server.watch_for_changes().unwrap();
         Some(asset_server.load("shaders/custom_material.frag"))
     }
 
@@ -313,72 +267,132 @@ impl SpecializedMaterial for CustomMaterial {
     fn bind_group_layout(render_device: &RenderDevice) -> BindGroupLayout {
         render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             entries: &[
+                // the uniform bind group
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(CustomMaterialUniformData::std140_size_static() as u64),
+                        min_binding_size: BufferSize::new(
+                            CustomMaterialUniformData::std140_size_static() as u64
+                        ),
                     },
                     count: None,
                 },
-
-                // BindGroupLayoutEntry {
-                //     binding: 1,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Texture {
-                //         sample_type: TextureSampleType::Float { filterable: true },
-                //         view_dimension: TextureViewDimension::D2,
-                //         multisampled: false,
-                //     },
-                //     count: None,
-                // },
-
-                // BindGroupLayoutEntry {
-                //     binding: 2,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                //     count: None,
-                // },
-                //
-                // BindGroupLayoutEntry {
-                //     binding: 3,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Texture {
-                //         sample_type: TextureSampleType::Float { filterable: true },
-                //         view_dimension: TextureViewDimension::D2,
-                //         multisampled: false,
-                //     },
-                //     count: None,
-                // },
-                //
-                // BindGroupLayoutEntry {
-                //     binding: 4,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                //     count: None,
-                // },
-                //
-                // BindGroupLayoutEntry {
-                //     binding: 5,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Texture {
-                //         sample_type: TextureSampleType::Float { filterable: true },
-                //         view_dimension: TextureViewDimension::D2,
-                //         multisampled: false,
-                //     },
-                //     count: None,
-                // },
-                //
-                // BindGroupLayoutEntry {
-                //     binding: 6,
-                //     visibility: ShaderStages::FRAGMENT,
-                //     ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                //     count: None,
-                // },
             ],
             label: None,
         })
     }
+}
+
+
+//////////////////////
+
+/// Tags an entity as capable of panning and orbiting.
+#[derive(Component)]
+struct PanOrbitCamera {
+    /// The "focus point" to orbit around. It is automatically updated when panning the camera
+    pub focus: Vec3,
+    pub radius: f32,
+    pub upside_down: bool,
+}
+
+impl Default for PanOrbitCamera {
+    fn default() -> Self {
+        PanOrbitCamera {
+            focus: Vec3::ZERO,
+            radius: 5.0,
+            upside_down: false,
+        }
+    }
+}
+
+/// Pan the camera with middle mouse click, zoom with scroll wheel, orbit with right mouse click.
+fn pan_orbit_camera(
+    windows: Res<Windows>,
+    mut ev_motion: EventReader<MouseMotion>,
+    mut ev_scroll: EventReader<MouseWheel>,
+    input_mouse: Res<Input<MouseButton>>,
+    mut query: Query<(&mut PanOrbitCamera, &mut Transform, &PerspectiveProjection)>,
+) {
+    // change input mapping for orbit and panning here
+    let orbit_button = MouseButton::Right;
+    let pan_button = MouseButton::Left;
+
+    let mut pan = Vec2::ZERO;
+    let mut rotation_move = Vec2::ZERO;
+    let mut scroll = 0.0;
+    let mut orbit_button_changed = false;
+
+    if input_mouse.pressed(orbit_button) {
+        for ev in ev_motion.iter() {
+            rotation_move += ev.delta;
+        }
+    } else if input_mouse.pressed(pan_button) {
+        // Pan only if we're not rotating at the moment
+        for ev in ev_motion.iter() {
+            pan += ev.delta;
+        }
+    }
+    for ev in ev_scroll.iter() {
+        scroll += ev.y;
+    }
+    if input_mouse.just_released(orbit_button) || input_mouse.just_pressed(orbit_button) {
+        orbit_button_changed = true;
+    }
+
+    for (mut pan_orbit, mut transform, projection) in query.iter_mut() {
+        if orbit_button_changed {
+            // only check for upside down when orbiting started or ended this frame
+            // if the camera is "upside" down, panning horizontally would be inverted, so invert the input to make it correct
+            let up = transform.rotation * Vec3::Y;
+            pan_orbit.upside_down = up.y <= 0.0;
+        }
+
+        let mut any = false;
+        if rotation_move.length_squared() > 0.0 {
+            any = true;
+            let window = get_primary_window_size(&windows);
+            let delta_x = {
+                let delta = rotation_move.x / window.x * std::f32::consts::PI * 2.0;
+                if pan_orbit.upside_down { -delta } else { delta }
+            };
+            let delta_y = rotation_move.y / window.y * std::f32::consts::PI;
+            let yaw = Quat::from_rotation_y(-delta_x);
+            let pitch = Quat::from_rotation_x(-delta_y);
+            transform.rotation = yaw * transform.rotation; // rotate around global y axis
+            transform.rotation = transform.rotation * pitch; // rotate around local x axis
+        } else if pan.length_squared() > 0.0 {
+            any = true;
+            // make panning distance independent of resolution and FOV,
+            let window = get_primary_window_size(&windows);
+            pan *= Vec2::new(projection.fov * projection.aspect_ratio, projection.fov) / window;
+            // translate by local axes
+            let right = transform.rotation * Vec3::X * -pan.x;
+            let up = transform.rotation * Vec3::Y * pan.y;
+            // make panning proportional to distance away from focus point
+            let translation = (right + up) * pan_orbit.radius;
+            pan_orbit.focus += translation;
+        } else if scroll.abs() > 0.0 {
+            any = true;
+            pan_orbit.radius -= scroll * pan_orbit.radius * 0.2;
+            // dont allow zoom to reach zero or you get stuck
+            pan_orbit.radius = f32::max(pan_orbit.radius, 0.05);
+        }
+
+        if any {
+            // emulating parent/child to make the yaw/y-axis rotation behave like a turntable
+            // parent = x and y rotation
+            // child = z-offset
+            let rot_matrix = Mat3::from_quat(transform.rotation);
+            transform.translation = pan_orbit.focus + rot_matrix.mul_vec3(Vec3::new(0.0, 0.0, pan_orbit.radius));
+        }
+    }
+}
+
+fn get_primary_window_size(windows: &Res<Windows>) -> Vec2 {
+    let window = windows.get_primary().unwrap();
+    let window = Vec2::new(window.width() as f32, window.height() as f32);
+    window
 }
