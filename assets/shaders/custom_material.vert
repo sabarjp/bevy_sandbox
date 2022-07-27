@@ -28,6 +28,6 @@ layout(set = 2, binding = 0) uniform Mesh {
 
 void main() {
     texCoordV = Vertex_Uv;
-    position = ViewProj * Model * vec4(Vertex_Position, 1.0);
+    position = Model * vec4(Vertex_Position, 1.0);
     gl_Position = ViewProj * Model * vec4(Vertex_Position, 1.0);
 }
