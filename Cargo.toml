@@ -9,3 +9,6 @@ edition = "2021"
 bevy = "0.7"
 rand = "0.8.5"
 bevy_renet = "0.0.4"
+
+# needed for pbr pipeline
+bitflags = "1.2"

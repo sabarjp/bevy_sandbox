@@ -4,15 +4,11 @@ use std::time::SystemTime;
 use bevy::app::App;
 use bevy::DefaultPlugins;
 use bevy::ecs::component::Component;
-use bevy::ecs::system::lifetimeless::SRes;
-use bevy::ecs::system::SystemParamItem;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
-use bevy::pbr::{AmbientLight, MaterialMeshBundle, MaterialPipeline, PointLightBundle, SpecializedMaterial};
-use bevy::prelude::{Assets, Camera, EventReader, Mat3, MaterialPlugin, MouseButton, PerspectiveCameraBundle, PerspectiveProjection, State, SystemSet, Vec2, Vec4, Windows, World};
-use bevy::prelude::AssetServer;
+use bevy::pbr::{AmbientLight, MaterialMeshBundle, MaterialPipeline, PointLightBundle, SpecializedMaterial, StandardMaterial};
+use bevy::prelude::{AlphaMode, Assets, AssetServer, EventReader, Handle, Image, Mat3, MaterialPlugin, MouseButton, PbrBundle, PerspectiveCameraBundle, PerspectiveProjection, State, SystemSet, Vec2, Vec4, Windows, World};
 use bevy::prelude::Color;
 use bevy::prelude::Commands;
-use bevy::prelude::Handle;
 use bevy::prelude::Input;
 use bevy::prelude::KeyCode;
 use bevy::prelude::Mesh;
@@ -22,23 +18,20 @@ use bevy::prelude::Quat;
 use bevy::prelude::Query;
 use bevy::prelude::Res;
 use bevy::prelude::ResMut;
-use bevy::prelude::Shader;
 use bevy::prelude::shape;
 use bevy::prelude::Time;
 use bevy::prelude::Transform;
 use bevy::prelude::Vec3;
-use bevy::reflect::TypeUuid;
-use bevy::render::mesh::MeshVertexBufferLayout;
-use bevy::render::render_asset::{PrepareAssetError, RenderAsset, RenderAssets};
-use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferInitDescriptor, BufferSize, BufferUsages, Extent3d, PipelineCache, RenderPipelineDescriptor, ShaderStages, SpecializedMeshPipelineError, StorageTextureAccess, TextureDimension, TextureFormat, TextureUsages, TextureViewDimension};
-use bevy::render::render_resource::std140::{AsStd140, Std140};
-use bevy::render::renderer::{RenderDevice, RenderQueue};
-use bevy::render::{RenderApp, RenderStage};
 use bevy::utils::default;
 use bevy_renet::renet::{ClientAuthentication, RenetClient, RenetConnectionConfig, RenetServer, ServerAuthentication, ServerConfig, ServerEvent};
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
 use rand::Rng;
 use bevy::ecs::schedule::ShouldRun;
+use rand::distributions::Standard;
+
+use crate::scrolling_material::{ScrollingPbrMaterial, ScrollingPbrMaterialPlugin};
+
+mod scrolling_material;
 
 #[derive(Debug, PartialEq, Eq)]
 enum MultiplayerKind {
@@ -140,7 +133,8 @@ fn main() {
     app
         .insert_resource(Msaa { samples: 4 })
         .add_plugins(DefaultPlugins)
-        .add_plugin(MaterialPlugin::<CustomMaterial>::default())
+        //.add_plugin(MaterialPlugin::<ScrollingPbrMaterial>::default())
+        .add_plugin(ScrollingPbrMaterialPlugin)
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 1.0 / 5.0
@@ -153,20 +147,17 @@ fn main() {
         SystemSet::new()
             .label("input")
             .with_system(pan_orbit_camera)
-            .with_system(move_torus)
+            .with_system(move_player)
             .with_system(enter_multiplayer)
     );
-
-    // render stages
-    app.sub_app_mut(RenderApp)
-        .add_system_to_stage(RenderStage::Extract, extract_camera_eye)
-        .add_system_to_stage(RenderStage::Prepare, prepare_camera_eye);
 
     app.run();
 }
 
 fn setup(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>
 ) {
     commands.spawn_bundle(PerspectiveCameraBundle {
         transform: Transform::from_xyz(-10.0, 5.0, -10.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -175,25 +166,50 @@ fn setup(
         ..default()
     });
 
+    // ground
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Plane { size: 3000.0 })),
+        material: materials.add(Color::rgb(1.0, 1.0, 1.0).into()),
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        ..default()
+    });
+
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Cube{ size: 1.0 })),
+        material: materials.add(Color::rgba(0.0, 0.0, 1.0, 0.5).into()),
+        transform: Transform::from_xyz(0.0, 50.0, 0.0),
+        ..default()
+    });
+
     commands.spawn_bundle(PointLightBundle {
         point_light: PointLight {
             color: Color::rgb(0.0, 0.0, 1.0),
-            intensity: 750.0,
+            intensity: 75000.0,
+            range: 600.0,
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_xyz(0.0, 10.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(0.0, 50.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     });
 }
 
-fn spawn_player_on_server(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<CustomMaterial>>,mode: Res<MultiplayerKind>) {
+fn spawn_player_on_server(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ScrollingPbrMaterial>>,
+    mode: Res<MultiplayerKind>)
+{
     if *mode == MultiplayerKind::Host || *mode == MultiplayerKind::Local {
+        let texture_handle: Handle<Image> = asset_server.load("textures/template.png");
         commands.spawn().insert_bundle(MaterialMeshBundle {
-            mesh: meshes.add(Mesh::from(shape::Torus { radius: 2.0, ring_radius: 1.0, subdivisions_segments: 24, subdivisions_sides: 64 })),
-            material: materials.add(CustomMaterial{
-                color: Color::rgb(1.0, 0.0, 0.0),
-                enabled: true,
+            mesh: meshes.add(Mesh::from(shape::UVSphere { radius: 2.0, ..default() })),
+            material: materials.add(ScrollingPbrMaterial {
+                base_color: Color::rgb(1.0, 1.0, 0.8),
+                base_color_texture: Some(texture_handle),
+                alpha_mode: AlphaMode::Blend,
+                //emissive: Color::rgb(1.0, 0.0, 0.0),
                 ..default()
             }),
             transform: Transform::from_xyz(0.0, 0.5, 0.0),
@@ -293,25 +309,13 @@ fn receive_message_as_server(mut server: ResMut<RenetServer>) {
 fn handle_events_as_server(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<CustomMaterial>>,
+    mut materials: ResMut<Assets<ScrollingPbrMaterial>>,
     mut server_events: EventReader<ServerEvent>)
 {
     for event in server_events.iter() {
         match event {
             ServerEvent::ClientConnected(id, _) => {
                 println!("Client {} connected", id);
-
-                // spawn player on the server
-                commands.spawn().insert_bundle(MaterialMeshBundle {
-                    mesh: meshes.add(Mesh::from(shape::Torus { radius: 2.0, ring_radius: 1.0, subdivisions_segments: 24, subdivisions_sides: 64 })),
-                    material: materials.add(CustomMaterial{
-                        color: Color::rgb(1.0, 0.0, 0.0),
-                        enabled: true,
-                        ..default()
-                    }),
-                    transform: Transform::from_xyz(0.0, 0.5, 0.0),
-                    ..default()
-                }).insert(Player {});
 
                 // send message to player to create itself
             }
@@ -360,7 +364,7 @@ fn enter_multiplayer(
     }
 }
 
-fn move_torus(time: Res<Time>, input: Res<Input<KeyCode>>, mut query: Query<(&Player, &mut Transform)>) {
+fn move_player(time: Res<Time>, input: Res<Input<KeyCode>>, mut query: Query<(&Player, &mut Transform)>) {
     for (_, mut transform) in query.iter_mut() {
         if input.pressed(KeyCode::W) {
             transform.translation.z += (3.0 * time.delta_seconds());
@@ -379,158 +383,6 @@ fn move_torus(time: Res<Time>, input: Res<Input<KeyCode>>, mut query: Query<(&Pl
         }
     }
 }
-
-struct ExtractedCameraEye {
-    camera_origin: Vec3
-}
-
-// extract the camera position into a resource in render world
-fn extract_camera_eye(mut commands: Commands, query: Query<(&Transform, &Camera)>) {
-    for (transform, _) in query.iter() {
-        commands.insert_resource(ExtractedCameraEye {
-            camera_origin: transform.translation
-        });
-    }
-}
-
-// write the camera position into the buffer for our shader asset
-fn prepare_camera_eye(mut material_assets: ResMut<RenderAssets<CustomMaterial>>, camera_eye: Res<ExtractedCameraEye>, render_queue: Res<RenderQueue>) {
-    for material in material_assets.values_mut() {
-        material.uniform_data.origin = camera_eye.camera_origin;
-        render_queue.write_buffer(
-            &material._buffer,
-            0,
-            material.uniform_data.as_std140().as_bytes(),
-        )
-    }
-}
-
-// This struct is the custom material itself
-#[derive(Clone, TypeUuid, Default)]
-#[uuid = "4ee9c363-1124-4113-890e-199d81b00281"]
-pub struct CustomMaterial {
-    color: Color,
-    origin: Vec3,
-    enabled: bool
-}
-
-// This is the struct that will be passed to the shader, using AsStd140 for uniforms
-#[derive(Clone, AsStd140)]
-struct CustomMaterialUniformData {
-    color: Vec4,
-    origin: Vec3,
-    enabled: f32
-}
-
-#[derive(Clone)]
-pub struct GpuCustomMaterial {
-    _buffer: Buffer,
-    uniform_data: CustomMaterialUniformData,
-    bind_group: BindGroup,
-}
-
-impl RenderAsset for CustomMaterial {
-    type ExtractedAsset = CustomMaterial;
-    type PreparedAsset = GpuCustomMaterial;
-    type Param = (
-        SRes<RenderDevice>,
-        SRes<MaterialPipeline<Self>>
-    );
-
-    fn extract_asset(&self) -> Self::ExtractedAsset {
-        self.clone()
-    }
-
-    fn prepare_asset(
-        extracted_asset: Self::ExtractedAsset,
-        (render_device, material_pipeline): &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        // prepare attributes passed to shader
-        let uniform_data = CustomMaterialUniformData {
-            color: extracted_asset.color.as_linear_rgba_f32().into(),
-            origin: extracted_asset.origin,
-            enabled: (extracted_asset.enabled as i32) as f32,
-        };
-
-
-        // load data buffer for shader
-        let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            contents: uniform_data.as_std140().as_bytes(),
-            label: None,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
-        let bind_group = render_device.create_bind_group(&BindGroupDescriptor {
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-            ],
-            label: None,
-            layout: &material_pipeline.material_layout,
-        });
-
-        Ok(GpuCustomMaterial {
-            _buffer: buffer,
-            uniform_data,
-            bind_group,
-        })
-    }
-}
-
-impl SpecializedMaterial for CustomMaterial {
-    type Key = ();
-
-    fn key(_: &<CustomMaterial as RenderAsset>::PreparedAsset) -> Self::Key {}
-
-    fn specialize(
-        _pipeline: &MaterialPipeline<Self>,
-        descriptor: &mut RenderPipelineDescriptor,
-        _: Self::Key,
-        _layout: &MeshVertexBufferLayout,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor.vertex.entry_point = "main".into();
-        descriptor.fragment.as_mut().unwrap().entry_point = "main".into();
-        Ok(())
-    }
-
-    fn vertex_shader(asset_server: &AssetServer) -> Option<Handle<Shader>> {
-        asset_server.watch_for_changes().unwrap();
-        Some(asset_server.load("shaders/custom_material.vert"))
-    }
-
-    fn fragment_shader(asset_server: &AssetServer) -> Option<Handle<Shader>> {
-        asset_server.watch_for_changes().unwrap();
-        Some(asset_server.load("shaders/custom_material.frag"))
-    }
-
-    fn bind_group(render_asset: &<Self as RenderAsset>::PreparedAsset) -> &BindGroup {
-        &render_asset.bind_group
-    }
-
-    fn bind_group_layout(render_device: &RenderDevice) -> BindGroupLayout {
-        render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            entries: &[
-                // the uniform bind group
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(
-                            CustomMaterialUniformData::std140_size_static() as u64
-                        ),
-                    },
-                    count: None,
-                },
-            ],
-            label: None,
-        })
-    }
-}
-
 
 //////////////////////
 
