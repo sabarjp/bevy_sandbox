@@ -1,13 +1,10 @@
-use std::path::Path;
 use bevy::DefaultPlugins;
 use bevy::prelude::{App, AssetServer, FromWorld, Handle, Image, Local, ResMut, World};
 use bevy_egui::{egui, EguiContext, EguiPlugin};
-use bevy_egui::egui::WidgetType::ImageButton;
 use crate::egui::Vec2;
 
 struct Images {
     button_1: Handle<Image>,
-    texture1: Option<egui::TextureHandle>,
 }
 
 impl FromWorld for Images {
@@ -15,7 +12,6 @@ impl FromWorld for Images {
         let asset_server = world.get_resource_mut::<AssetServer>().unwrap();
         Self {
             button_1: asset_server.load("textures/Big_Rectangle.png"),
-            texture1: None
         }
     }
 }
