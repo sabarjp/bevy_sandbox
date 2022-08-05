@@ -27,7 +27,6 @@ use bevy_renet::renet::{ClientAuthentication, RenetClient, RenetConnectionConfig
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
 use rand::Rng;
 use bevy::ecs::schedule::ShouldRun;
-use rand::distributions::Standard;
 
 use crate::scrolling_material::{ScrollingPbrMaterial, ScrollingPbrMaterialPlugin};
 
@@ -203,11 +202,13 @@ fn spawn_player_on_server(
 {
     if *mode == MultiplayerKind::Host || *mode == MultiplayerKind::Local {
         let texture_handle: Handle<Image> = asset_server.load("textures/template.png");
+        let overlay_handle: Handle<Image> = asset_server.load("textures/dust.png");
         commands.spawn().insert_bundle(MaterialMeshBundle {
             mesh: meshes.add(Mesh::from(shape::UVSphere { radius: 2.0, ..default() })),
             material: materials.add(ScrollingPbrMaterial {
                 base_color: Color::rgb(1.0, 1.0, 0.8),
                 base_color_texture: Some(texture_handle),
+                scrolling_texture: Some(overlay_handle),
                 alpha_mode: AlphaMode::Blend,
                 //emissive: Color::rgb(1.0, 0.0, 0.0),
                 ..default()

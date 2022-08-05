@@ -98,10 +98,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 
     out.uv = vertex.uv;
     out.clip_position = view.view_proj * out.world_position;
+    // make sure to fix -1,1 clamp to 0,1
     out.screen_position = vec4<f32>(
-        out.clip_position.x / out.clip_position.w,
-        out.clip_position.y / out.clip_position.w,
-        out.clip_position.z / out.clip_position.w,
+        ((out.clip_position.x / out.clip_position.w) + 1.) / 2.,
+        ((out.clip_position.y / out.clip_position.w) + 1.) / 2.,
+        ((out.clip_position.z / out.clip_position.w) + 1.) / 2.,
         1.0
     );
     return out;
@@ -130,6 +131,7 @@ let STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK: u32                = 128u;
 let STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND: u32               = 256u;
 let STANDARD_MATERIAL_FLAGS_TWO_COMPONENT_NORMAL_MAP: u32       = 512u;
 let STANDARD_MATERIAL_FLAGS_FLIP_NORMAL_MAP_Y: u32              = 1024u;
+let STANDARD_MATERIAL_FLAGS_SCROLLING_ENABLED: u32              = 2048u;
 
 [[group(1), binding(0)]]
 var<uniform> material: StandardMaterial;
@@ -153,6 +155,10 @@ var occlusion_sampler: sampler;
 var normal_map_texture: texture_2d<f32>;
 [[group(1), binding(10)]]
 var normal_map_sampler: sampler;
+[[group(1), binding(11)]]
+var scrolling_texture: texture_2d<f32>;
+[[group(1), binding(12)]]
+var scrolling_texture_sampler: sampler;
 
 let PI: f32 = 3.141592653589793;
 
@@ -547,6 +553,11 @@ fn fragment(in: FragmentInput) -> [[location(0)]] vec4<f32> {
         output_color = output_color * textureSample(base_color_texture, base_color_sampler, in.uv);
     }
 
+    if ((material.flags & STANDARD_MATERIAL_FLAGS_SCROLLING_ENABLED) != 0u) {
+        let new_screen = vec4<f32>(in.screen_position.x, (sin(in.screen_position.y - time) + 1.) / 2., in.screen_position.z, 1.0);
+        output_color = output_color * textureSample(scrolling_texture, scrolling_texture_sampler, new_screen.xy);
+    }
+
     // // NOTE: Unlit bit not set means == 0 is true, so the true case is if lit
     if ((material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u) {
         // TODO use .a for exposure compensation in HDR
@@ -735,15 +746,6 @@ fn fragment(in: FragmentInput) -> [[location(0)]] vec4<f32> {
         // Not needed with sRGB buffer
         // output_color.rgb = pow(output_color.rgb, vec3(1.0 / 2.2));
     }
-
-    // .22222, .22334, .2342345
-    //let dt = material.time % 1.0;
-    //output_color = vec4<f32>(sin(material.time), dt, dt, 1.0);
-
-    // screen xy can sub as texture coordinate
-    // vary the uv
-    let new_screen = vec4<f32>(sin(in.screen_position.x + material.time), in.screen_position.y, in.screen_position.z, 1.0);
-    output_color = output_color * new_screen;
 
     return output_color;
 }

@@ -1,16 +1,14 @@
 use crate::{MaterialPipeline, SpecializedMaterial};
 use bevy::asset::{AssetServer, Handle};
-use bevy::core_pipeline::Transparent3d;
 use bevy::ecs::system::{lifetimeless::SRes, SystemParamItem};
 use bevy::math::Vec4;
-use bevy::pbr::{AlphaMode, DrawMesh, SetMeshBindGroup, SetMeshViewBindGroup};
-use bevy::prelude::{App, Commands, Entity, Local, MaterialPlugin, Plugin, Query, Res, ResMut, Time, With};
+use bevy::pbr::{AlphaMode};
+use bevy::prelude::{App, Commands, MaterialPlugin, Plugin, Res, ResMut, Time};
 use bevy::reflect::TypeUuid;
 use bevy::render::{color::Color, mesh::MeshVertexBufferLayout, prelude::Shader, render_asset::{PrepareAssetError, RenderAsset, RenderAssets}, render_resource::{
     std140::{AsStd140, Std140},
     *,
 }, RenderApp, renderer::RenderDevice, RenderStage, texture::Image};
-use bevy::render::render_phase::{AddRenderCommand, EntityRenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass};
 use bevy::render::renderer::RenderQueue;
 
 /// A material with "standard" properties used in PBR lighting
@@ -59,7 +57,11 @@ pub struct ScrollingPbrMaterial {
     pub cull_mode: Option<Face>,
     pub unlit: bool,
     pub alpha_mode: AlphaMode,
-    pub time: f32
+    /// Time data for animation purposes
+    pub time: f32,
+    /// Texture for the scrolling overlay
+    pub scrolling_enabled: bool,
+    pub scrolling_texture: Option<Handle<Image>>,
 }
 
 impl Default for ScrollingPbrMaterial {
@@ -90,7 +92,9 @@ impl Default for ScrollingPbrMaterial {
             cull_mode: Some(Face::Back),
             unlit: false,
             alpha_mode: AlphaMode::Opaque,
-            time: 0.
+            time: 0.,
+            scrolling_enabled: true,
+            scrolling_texture: None
         }
     }
 }
@@ -128,6 +132,7 @@ bitflags::bitflags! {
         const ALPHA_MODE_BLEND           = (1 << 8);
         const TWO_COMPONENT_NORMAL_MAP   = (1 << 9);
         const FLIP_NORMAL_MAP_Y          = (1 << 10);
+        const SCROLLING_ENABLED          = (1 << 11);
         const NONE                       = 0;
         const UNINITIALIZED              = 0xFFFF;
     }
@@ -236,6 +241,15 @@ impl RenderAsset for ScrollingPbrMaterial {
         } else {
             return Err(PrepareAssetError::RetryNextUpdate(material));
         };
+        let (scrolling_texture_view, scrolling_texture_sampler) = if let Some(result) = pbr_pipeline
+            .mesh_pipeline
+            .get_image_texture(gpu_images, &material.scrolling_texture)
+        {
+            result
+        } else {
+            return Err(PrepareAssetError::RetryNextUpdate(material));
+        };
+
         let mut flags = StandardMaterialFlags::NONE;
         if material.base_color_texture.is_some() {
             flags |= StandardMaterialFlags::BASE_COLOR_TEXTURE;
@@ -274,6 +288,9 @@ impl RenderAsset for ScrollingPbrMaterial {
             if material.flip_normal_map_y {
                 flags |= StandardMaterialFlags::FLIP_NORMAL_MAP_Y;
             }
+        }
+        if material.scrolling_enabled {
+            flags |= StandardMaterialFlags::SCROLLING_ENABLED;
         }
         // NOTE: 0.5 is from the glTF default - do we want this?
         let mut alpha_cutoff = 0.5;
@@ -348,6 +365,14 @@ impl RenderAsset for ScrollingPbrMaterial {
                 BindGroupEntry {
                     binding: 10,
                     resource: BindingResource::Sampler(normal_map_sampler),
+                },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: BindingResource::TextureView(scrolling_texture_view),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: BindingResource::Sampler(scrolling_texture_sampler),
                 },
             ],
             label: Some("pbr_standard_material_bind_group"),
@@ -520,6 +545,24 @@ impl SpecializedMaterial for ScrollingPbrMaterial {
                 // Normal Map Texture Sampler
                 BindGroupLayoutEntry {
                     binding: 10,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // Scrolling Overlay Texture
+                BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        multisampled: false,
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                // Scrolling Overlay Texture Sampler
+                BindGroupLayoutEntry {
+                    binding: 12,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
